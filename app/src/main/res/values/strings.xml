@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">POWER LAB</string>
+    <string name="app_tagline">Virtual Science Laboratory</string>
+    <string name="tab_lab">Lab</string>
+    <string name="tab_experiments">Experiments</string>
+    <string name="tab_molecules">Molecule Maker</string>
+    <string name="tab_equipment">Equipment</string>
+    <string name="tab_challenges">Challenges</string>
+    <string name="tab_achievements">Achievements</string>
+    <string name="tab_settings">Settings</string>
+</resources>

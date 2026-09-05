@@ -1,0 +1,6 @@
+{
+  "name": "POWER LAB",
+  "description": "Interactive mobile-first virtual science simulation laboratory featuring Physics, Chemistry, Organic Compound Maker, real-time measurements, and interactive experiments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
