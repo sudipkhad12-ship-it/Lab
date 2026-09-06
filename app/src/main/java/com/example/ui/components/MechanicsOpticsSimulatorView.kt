@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,10 +25,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Brightness5
 import androidx.compose.material.icons.filled.FilterDrama
 import androidx.compose.material.icons.filled.Loop
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -38,16 +45,19 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -55,11 +65,17 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.physics.ExperimentPreset
+import com.example.physics.GravityPreset
+import com.example.physics.Particle2D
+import com.example.physics.PhysicsEngine2D
+import com.example.physics.Vector2D
 import com.example.ui.theme.AtomicAmber
 import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.LaserCrimson
@@ -73,6 +89,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 enum class PhysicsWorkbenchDomain {
+  PARTICLE_PHYSICS,
   PENDULUM,
   OPTICS_LENS,
   PRISM_DISPERSION,
@@ -82,7 +99,36 @@ enum class PhysicsWorkbenchDomain {
 
 @Composable
 fun MechanicsOpticsSimulatorView() {
-  var selectedDomain by remember { mutableStateOf(PhysicsWorkbenchDomain.PENDULUM) }
+  var selectedDomain by remember { mutableStateOf(PhysicsWorkbenchDomain.PARTICLE_PHYSICS) }
+
+  // 2D Physics Engine State
+  val physicsEngine = remember { PhysicsEngine2D() }
+  var isPhysicsRunning by remember { mutableStateOf(true) }
+  var currentPreset by remember { mutableStateOf(ExperimentPreset.NEWTONS_CRADLE) }
+  var engineStepCount by remember { mutableStateOf(0L) }
+  var particleGravityG by remember { mutableFloatStateOf(9.8f) }
+  var particleRestitution by remember { mutableFloatStateOf(0.92f) }
+  var canvasDimensions by remember { mutableStateOf(Size(600f, 260f)) }
+
+  // Preset load sync
+  LaunchedEffect(currentPreset, canvasDimensions) {
+    if (canvasDimensions.width > 50f && canvasDimensions.height > 50f) {
+      physicsEngine.loadPreset(currentPreset, canvasDimensions.width, canvasDimensions.height)
+      physicsEngine.gravity = Vector2D(0f, particleGravityG * 40f)
+      physicsEngine.globalRestitution = particleRestitution
+      engineStepCount++
+    }
+  }
+
+  // Live real-time physics tick loop
+  LaunchedEffect(isPhysicsRunning, selectedDomain) {
+    while (isPhysicsRunning && selectedDomain == PhysicsWorkbenchDomain.PARTICLE_PHYSICS) {
+      withFrameNanos { _ ->
+        physicsEngine.update(0.016f, substeps = 4)
+        engineStepCount++
+      }
+    }
+  }
 
   // Pendulum State
   var pendulumLengthM by remember { mutableFloatStateOf(1.0f) }
@@ -133,6 +179,12 @@ fun MechanicsOpticsSimulatorView() {
       horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
       FilterChip(
+        selected = selectedDomain == PhysicsWorkbenchDomain.PARTICLE_PHYSICS,
+        onClick = { selectedDomain = PhysicsWorkbenchDomain.PARTICLE_PHYSICS },
+        label = { Text("2D Particle Physics") },
+        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ElectricCyan.copy(alpha = 0.2f))
+      )
+      FilterChip(
         selected = selectedDomain == PhysicsWorkbenchDomain.PENDULUM,
         onClick = { selectedDomain = PhysicsWorkbenchDomain.PENDULUM },
         label = { Text("Pendulum SHM") },
@@ -168,13 +220,49 @@ fun MechanicsOpticsSimulatorView() {
     Card(
       modifier = Modifier
         .fillMaxWidth()
-        .height(240.dp)
-        .testTag("mechanics_optics_canvas"),
+        .height(260.dp)
+        .testTag("mechanics_optics_canvas")
+        .pointerInput(selectedDomain) {
+          if (selectedDomain == PhysicsWorkbenchDomain.PARTICLE_PHYSICS) {
+            detectTapGestures { offset ->
+              // Spawn an interactive particle at tap location with an impulse velocity
+              val colors = listOf(
+                Color(0xFF22D3EE),
+                Color(0xFF10B981),
+                Color(0xFFF59E0B),
+                Color(0xFFA855F7),
+                Color(0xFFEF4444)
+              )
+              val randColor = colors.random()
+              val randVelX = ((-140..140).random()).toFloat()
+              val randVelY = ((-220..-60).random()).toFloat()
+              physicsEngine.spawnParticle(
+                pos = Vector2D(offset.x, offset.y),
+                vel = Vector2D(randVelX, randVelY),
+                mass = (10..35).random() / 10f,
+                radius = (10..18).random().toFloat(),
+                restitution = particleRestitution,
+                color = randColor,
+                name = "Tap"
+              )
+              engineStepCount++
+            }
+          }
+        },
       colors = CardDefaults.cardColors(containerColor = Color(0xFF0B0F19)),
       shape = RoundedCornerShape(16.dp)
     ) {
-      Canvas(modifier = Modifier.fillMaxWidth().height(240.dp)) {
+      Canvas(modifier = Modifier.fillMaxWidth().height(260.dp)) {
+        if (size.width != canvasDimensions.width || size.height != canvasDimensions.height) {
+          canvasDimensions = size
+          physicsEngine.bounds = Rect(15f, 15f, size.width - 15f, size.height - 15f)
+        }
+
         when (selectedDomain) {
+          PhysicsWorkbenchDomain.PARTICLE_PHYSICS -> {
+            val _tick = engineStepCount
+            drawParticlePhysicsCanvas(physicsEngine)
+          }
           PhysicsWorkbenchDomain.PENDULUM -> {
             drawPendulumCanvas(pendulumLengthM, pendulumMassKg, gravityG, oscillationPhase)
           }
@@ -202,6 +290,20 @@ fun MechanicsOpticsSimulatorView() {
     ) {
       Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         when (selectedDomain) {
+          PhysicsWorkbenchDomain.PARTICLE_PHYSICS -> {
+            val ke = physicsEngine.totalKineticEnergy() / 1000f
+            val pMag = physicsEngine.totalMomentum().magnitude() / 100f
+            Text(
+              "2D Collision Dynamics: m₁v₁ + m₂v₂ = m₁v₁' + m₂v₂' | E_k = ½mv²",
+              fontWeight = FontWeight.Bold,
+              color = ElectricCyan
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+              MeterDisplayBox(Modifier.weight(1f), "KINETIC ENERGY", String.format("%.2f J", ke), ElectricCyan)
+              MeterDisplayBox(Modifier.weight(1f), "COLLISIONS", "${physicsEngine.collisionCount}", NeonEmerald)
+              MeterDisplayBox(Modifier.weight(1f), "MOMENTUM |P|", String.format("%.2f", pMag), AtomicAmber)
+            }
+          }
           PhysicsWorkbenchDomain.PENDULUM -> {
             val period = 2f * PI.toFloat() * sqrt(pendulumLengthM / gravityG)
             val freq = 1f / period
@@ -270,6 +372,152 @@ fun MechanicsOpticsSimulatorView() {
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
       Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         when (selectedDomain) {
+          PhysicsWorkbenchDomain.PARTICLE_PHYSICS -> {
+            Text("Experiment Scenarios & Presets", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              ExperimentPreset.values().forEach { preset ->
+                FilterChip(
+                  selected = currentPreset == preset,
+                  onClick = {
+                    currentPreset = preset
+                    physicsEngine.loadPreset(preset, canvasDimensions.width, canvasDimensions.height)
+                    physicsEngine.gravity = Vector2D(0f, particleGravityG * 40f)
+                    physicsEngine.globalRestitution = particleRestitution
+                    engineStepCount++
+                  },
+                  label = { Text(preset.title, fontSize = 12.sp) },
+                  colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ElectricCyan.copy(alpha = 0.2f))
+                )
+              }
+            }
+
+            Text("Gravitational Environments", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              GravityPreset.values().forEach { gp ->
+                FilterChip(
+                  selected = particleGravityG == gp.gravityY,
+                  onClick = {
+                    particleGravityG = gp.gravityY
+                    physicsEngine.gravity = Vector2D(0f, particleGravityG * 40f)
+                  },
+                  label = { Text(gp.displayName, fontSize = 11.sp) }
+                )
+              }
+            }
+
+            Column {
+              Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Custom Gravity Strength (g)", fontSize = 13.sp)
+                Text(String.format("%.1f m/s²", particleGravityG), fontWeight = FontWeight.Bold, color = AtomicAmber)
+              }
+              Slider(
+                value = particleGravityG,
+                onValueChange = {
+                  particleGravityG = it
+                  physicsEngine.gravity = Vector2D(0f, particleGravityG * 40f)
+                },
+                valueRange = 0f..30f,
+                colors = SliderDefaults.colors(thumbColor = AtomicAmber, activeTrackColor = AtomicAmber)
+              )
+            }
+
+            Column {
+              Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Collision Elasticity / Restitution (e)", fontSize = 13.sp)
+                val label = when {
+                  particleRestitution >= 0.98f -> "1.00 (Elastic)"
+                  particleRestitution <= 0.05f -> "0.00 (Inelastic)"
+                  else -> String.format("%.2f", particleRestitution)
+                }
+                Text(label, fontWeight = FontWeight.Bold, color = ElectricCyan)
+              }
+              Slider(
+                value = particleRestitution,
+                onValueChange = {
+                  particleRestitution = it
+                  physicsEngine.globalRestitution = it
+                  for (p in physicsEngine.particles) {
+                    if (!p.isPinned) {
+                      p.restitution = it
+                    }
+                  }
+                },
+                valueRange = 0.0f..1.0f,
+                colors = SliderDefaults.colors(thumbColor = ElectricCyan, activeTrackColor = ElectricCyan)
+              )
+            }
+
+            // Quick actions (Run/Pause, Reset, Add Particle)
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Button(
+                onClick = { isPhysicsRunning = !isPhysicsRunning },
+                colors = ButtonDefaults.buttonColors(containerColor = if (isPhysicsRunning) LaserCrimson else NeonEmerald),
+                modifier = Modifier.weight(1f)
+              ) {
+                Icon(if (isPhysicsRunning) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text(if (isPhysicsRunning) "Pause" else "Run")
+              }
+
+              Button(
+                onClick = {
+                  physicsEngine.loadPreset(currentPreset, canvasDimensions.width, canvasDimensions.height)
+                  physicsEngine.gravity = Vector2D(0f, particleGravityG * 40f)
+                  physicsEngine.globalRestitution = particleRestitution
+                  engineStepCount++
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                modifier = Modifier.weight(1f)
+              ) {
+                Icon(Icons.Default.Refresh, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Reset")
+              }
+
+              Button(
+                onClick = {
+                  val minX = 40
+                  val maxX = (canvasDimensions.width - 40f).toInt().coerceAtLeast(60)
+                  val randX = (minX..maxX).random().toFloat()
+                  val colors = listOf(
+                    Color(0xFF22D3EE),
+                    Color(0xFF10B981),
+                    Color(0xFFF59E0B),
+                    Color(0xFFA855F7),
+                    Color(0xFFEC4899)
+                  )
+                  physicsEngine.spawnParticle(
+                    pos = Vector2D(randX, 40f),
+                    vel = Vector2D((-100..100).random().toFloat(), (20..120).random().toFloat()),
+                    mass = (10..30).random() / 10f,
+                    radius = (10..16).random().toFloat(),
+                    restitution = particleRestitution,
+                    color = colors.random()
+                  )
+                  engineStepCount++
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan.copy(alpha = 0.85f)),
+                modifier = Modifier.weight(1f)
+              ) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Add")
+              }
+            }
+          }
           PhysicsWorkbenchDomain.PENDULUM -> {
             Text("Gravity Field Environments", fontWeight = FontWeight.Bold, fontSize = 14.sp)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -396,6 +644,138 @@ fun MechanicsOpticsSimulatorView() {
 }
 
 // Canvas Drawings for Mechanics & Optics
+private fun DrawScope.drawParticlePhysicsCanvas(engine: PhysicsEngine2D) {
+  val bounds = engine.bounds
+
+  // Laboratory dot grid background
+  val dotSpacing = 24f
+  var gx = bounds.left + 12f
+  while (gx < bounds.right) {
+    var gy = bounds.top + 12f
+    while (gy < bounds.bottom) {
+      drawCircle(Color(0xFF1E293B), radius = 1.3f, center = Offset(gx, gy))
+      gy += dotSpacing
+    }
+    gx += dotSpacing
+  }
+
+  // Chamber Border with laboratory cyan/slate styling
+  drawRoundRect(
+    color = Color(0xFF334155),
+    topLeft = Offset(bounds.left, bounds.top),
+    size = Size(bounds.width, bounds.height),
+    cornerRadius = CornerRadius(14f, 14f),
+    style = Stroke(width = 2.5f)
+  )
+
+  // Gravity field indicator arrow in top-left
+  val gMag = engine.gravity.y / 40f
+  if (gMag > 0.1f) {
+    val gStartX = bounds.left + 22f
+    val gStartY = bounds.top + 20f
+    val gLen = (gMag * 2.6f).coerceIn(14f, 44f)
+    drawLine(
+      color = Color(0xFFF59E0B).copy(alpha = 0.85f),
+      start = Offset(gStartX, gStartY),
+      end = Offset(gStartX, gStartY + gLen),
+      strokeWidth = 3f,
+      cap = StrokeCap.Round
+    )
+    // Arrowhead
+    drawLine(
+      color = Color(0xFFF59E0B).copy(alpha = 0.85f),
+      start = Offset(gStartX - 4f, gStartY + gLen - 5f),
+      end = Offset(gStartX, gStartY + gLen),
+      strokeWidth = 3f
+    )
+    drawLine(
+      color = Color(0xFFF59E0B).copy(alpha = 0.85f),
+      start = Offset(gStartX + 4f, gStartY + gLen - 5f),
+      end = Offset(gStartX, gStartY + gLen),
+      strokeWidth = 3f
+    )
+  }
+
+  // Draw particles
+  for (p in engine.particles) {
+    // 1. Fading trajectory trail
+    if (p.trail.size > 1) {
+      val trailList = p.trail.toList()
+      for (ti in 0 until trailList.size - 1) {
+        val fraction = (ti + 1).toFloat() / trailList.size.toFloat()
+        val alpha = fraction * 0.45f
+        drawLine(
+          color = p.color.copy(alpha = alpha),
+          start = Offset(trailList[ti].x, trailList[ti].y),
+          end = Offset(trailList[ti + 1].x, trailList[ti + 1].y),
+          strokeWidth = (p.radius * 0.35f * fraction).coerceAtLeast(1.5f),
+          cap = StrokeCap.Round
+        )
+      }
+    }
+
+    val center = Offset(p.position.x, p.position.y)
+
+    // 2. Velocity vector arrow
+    val velMag = p.velocity.magnitude()
+    if (velMag > 6f && !p.isPinned) {
+      val velScale = 0.08f
+      val velEnd = Offset(
+        p.position.x + p.velocity.x * velScale,
+        p.position.y + p.velocity.y * velScale
+      )
+      drawLine(
+        color = p.color.copy(alpha = 0.65f),
+        start = center,
+        end = velEnd,
+        strokeWidth = 2.5f,
+        cap = StrokeCap.Round
+      )
+    }
+
+    // 3. Particle Body
+    if (p.isPinned) {
+      // Pinned bumper obstacle
+      drawCircle(
+        color = Color(0xFF334155),
+        radius = p.radius,
+        center = center
+      )
+      drawCircle(
+        color = Color(0xFF94A3B8),
+        radius = p.radius,
+        center = center,
+        style = Stroke(width = 3f)
+      )
+      drawLine(Color(0xFF94A3B8), Offset(center.x - p.radius * 0.6f, center.y), Offset(center.x + p.radius * 0.6f, center.y), strokeWidth = 2.5f)
+      drawLine(Color(0xFF94A3B8), Offset(center.x, center.y - p.radius * 0.6f), Offset(center.x, center.y + p.radius * 0.6f), strokeWidth = 2.5f)
+    } else {
+      // Dynamic bouncing particle disc
+      drawCircle(
+        brush = Brush.radialGradient(
+          colors = listOf(p.color.copy(alpha = 0.95f), p.color.copy(alpha = 0.45f), Color(0xFF0F172A)),
+          center = Offset(center.x - p.radius * 0.3f, center.y - p.radius * 0.3f),
+          radius = p.radius * 1.2f
+        ),
+        radius = p.radius,
+        center = center
+      )
+      drawCircle(
+        color = p.color,
+        radius = p.radius,
+        center = center,
+        style = Stroke(width = 2f)
+      )
+      // Specular shine
+      drawCircle(
+        color = Color.White.copy(alpha = 0.65f),
+        radius = p.radius * 0.25f,
+        center = Offset(center.x - p.radius * 0.32f, center.y - p.radius * 0.32f)
+      )
+    }
+  }
+}
+
 private fun DrawScope.drawPendulumCanvas(lengthM: Float, massKg: Float, g: Float, phase: Float) {
   val cx = size.width / 2f
   val topY = 30f
